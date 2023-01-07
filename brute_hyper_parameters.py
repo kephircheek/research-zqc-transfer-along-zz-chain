@@ -3,6 +3,7 @@ import itertools
 import json
 import pathlib
 from dataclasses import dataclass
+import shutil
 
 import numpy as np
 import quanty.json
@@ -47,6 +48,17 @@ def calc(
     )
 
 
+def parse_number(n: str):
+    return int(n) if float(n) == int(float(n)) else float(n)
+
+def parse_slice(s: str):
+    args = [parse_number(n) if n.strip() else None for n in s.split(":")]
+    return slice(*args)
+
+def dump_slice(a, b, n, ndigits=2):
+    return f"{round(a, ndigits)}_{round(b, ndigits)}_{n}"
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -58,22 +70,59 @@ if __name__ == "__main__":
     parser.add_argument("--length", type=int)
     parser.add_argument("--norm", action="store_true")
     parser.add_argument("--n_jobs", type=int, default=1)
-    parser.add_argument("--tn", type=int, default=11)
-    parser.add_argument("--tb", type=int, default=None)
-    parser.add_argument("--wn", type=int, default=31)
-    parser.add_argument("--ab", type=float, default=np.pi / 2)
-    parser.add_argument("--an", type=int, default=31)
+    parser.add_argument("--tt", type=parse_slice, default=None)
+    parser.add_argument("--width", type=parse_slice, default=None)
+    parser.add_argument("--angle", type=parse_slice, default=None)
     args = parser.parse_args()
 
-    tb = args.tb or args.length * 10
-    wn = args.wn
-    path_name = f"results_n{args.length}_tb{tb}_tn{args.tn}_wn{wn}_ab{args.ab}_an{args.an}{'_norm' if args.norm else ''}"
-    path_dir = PATH_DIR_DATA / pathlib.Path(path_name)
-    (path_dir.exists() and path_dir.is_dir()) or path_dir.mkdir()
+    ta_default = 0
+    tb_default = args.length * 10
+    if args.tt is None:
+        ta = ta_default
+        tb = tb_default
+        tn = int(abs(ta - tb) / 10) + 1
+    else:
+        ta = args.tt.start or ta_default
+        tb = args.tt.stop or tb_default
+        tn = args.tt.step or int(abs(ta - tb) / 10) + 1
 
-    width_span = np.linspace(0, 3, wn)
-    h_angle_span = np.linspace(0, args.ab, args.an)
-    tt_span = np.linspace(0, tb, args.tn)
+    wa_default = 0
+    wb_default = 3
+    if args.width is None:
+        wa = wa_default
+        wb = wb_default
+        wn = int(abs(wa - wb) * 10) + 1
+    else:
+        wa = args.width.start or wa_default
+        wb = args.width.stop or wb_default
+        wn = args.width.step or int(abs(wa - wb) * 10) + 1
+
+    aa_default = 0
+    ab_default = np.pi
+    if args.angle is None:
+        aa = aa_default
+        ab = ab_default
+        an = int(abs(aa - ab) * 10) + 1
+    else:
+        aa = args.angle.start or aa_default
+        ab = args.angle.stop or ab_default
+        an = args.angle.step or int(abs(aa - ab) * 10) + 1
+
+    tt_suffix = f"{dump_slice(ta, tb, tn)}"
+    width_suffix = f"{dump_slice(wa, wb, wn)}"
+    angle_suffix = f"{dump_slice(aa, ab, an)}"
+    norm_suffix = '-norm' if args.norm else ''
+    path_name = f"n{args.length}-tt_{tt_suffix}-w_{width_suffix}-a_{angle_suffix}{norm_suffix}"
+
+    path_dir_data = PATH_DIR_DATA / pathlib.Path(__file__).stem
+
+    path_dir = path_dir_data / path_name
+    (path_dir.exists() and path_dir.is_dir()) or path_dir.mkdir(parents=True)
+    print(path_dir)
+
+    tt_span = np.linspace(ta, tb, tn)
+    width_span = np.linspace(wa, wb, wn)
+    h_angle_span = np.linspace(aa, ab, an)
     results = calc(
         path_dir,
         args.length,
@@ -86,10 +135,8 @@ if __name__ == "__main__":
     )
 
     results = [quanty.json.loads(p.read_text()) for p in path_dir.iterdir()]
-    path = PATH_DIR_DATA / pathlib.Path(f"{path_name}.json")
+    path = path_dir_data / f"{path_name}.json"
     path.write_text(quanty.json.dumps(results, indent=2))
-
-    import shutil
 
     shutil.rmtree(path_dir)
 
