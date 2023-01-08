@@ -123,19 +123,24 @@ if __name__ == "__main__":
     tt_span = np.linspace(ta, tb, tn)
     width_span = np.linspace(wa, wb, wn)
     h_angle_span = np.linspace(aa, ab, an)
-    results = calc(
-        path_dir,
-        args.length,
-        width_span,
-        h_angle_span,
-        tt_span,
-        norm=args.norm,
-        n_jobs=args.n_jobs,
-        backend=args.backend,
-    )
+
+    spec_suffix = ""
+    try:
+        calc(
+            path_dir,
+            args.length,
+            width_span,
+            h_angle_span,
+            tt_span,
+            norm=args.norm,
+            n_jobs=args.n_jobs,
+            backend=args.backend,
+        )
+    except KeyboardInterrupt:
+        spec_suffix = "-broken"
 
     results = [quanty.json.loads(p.read_text()) for p in path_dir.iterdir()]
-    path = path_dir_data / f"{path_name}.json"
+    path = path_dir_data / f"{path_name}{spec_suffix}.json"
     path.write_text(quanty.json.dumps(results, indent=2))
 
     shutil.rmtree(path_dir)
