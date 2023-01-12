@@ -21,15 +21,15 @@ from quanty.task.transfer_ import TransferAlongChain, TransferZQCPerfectlyTask
 from config import PATH_DIR_DATA
 
 
-def calc_case(path, length, width, h_angle, tt, norm):
+def calc_case(path, length, width, h_angle, tt, norm, n_sender):
     geometry = ZigZagChain.from_two_chain(2, width)  # two is True
     model = Homogeneous(geometry, h_angle=h_angle, norm_on=(0, 1) if norm else None)
     hamiltonian = XXZ(model)
     problem = TransferAlongChain.init_classic(
         hamiltonian,
         length=length,
-        n_sender=3,
-        excitations=3,
+        n_sender=n_sender,
+        excitations=n_sender,
     )
     task = TransferZQCPerfectlyTask(problem, transmission_time=tt)
     result = task.run()
@@ -38,12 +38,22 @@ def calc_case(path, length, width, h_angle, tt, norm):
 
 
 def calc(
-    path_dir, length, width_span, h_angle_span, tt_span, norm, n_jobs=1, backend="loky"
+    path_dir,
+    length,
+    width_span,
+    h_angle_span,
+    tt_span,
+    norm,
+    n_sender=3,
+    n_jobs=1,
+    backend="loky",
 ):
     results = []
     cases = itertools.product(width_span, h_angle_span, tt_span)
     Parallel(n_jobs=n_jobs, backend=backend)(
-        delayed(calc_case)(path_dir / f"{i}.json", length, width, h_angle, tt, norm)
+        delayed(calc_case)(
+            path_dir / f"{i}.json", length, width, h_angle, tt, norm, n_sender=n_sender
+        )
         for i, (width, h_angle, tt) in tqdm.tqdm(list(enumerate(cases)), ncols=90)
     )
 
@@ -62,7 +72,10 @@ def dump_slice(a, b, n, ndigits=2):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description="Find perfect transferred state with full init state."
+        " (sender spins number equal to top excitation number)"
+    )
     parser.add_argument(
         "--backend",
         type=str,
@@ -75,6 +88,8 @@ if __name__ == "__main__":
     parser.add_argument("--tt", type=parse_slice, default=None)
     parser.add_argument("--width", type=parse_slice, default=None)
     parser.add_argument("--angle", type=parse_slice, default=None)
+    parser.add_argument("--sender", type=int, default=3)
+
     args = parser.parse_args()
 
     ta_default = 0
@@ -114,9 +129,7 @@ if __name__ == "__main__":
     width_suffix = f"{dump_slice(wa, wb, wn)}"
     angle_suffix = f"{dump_slice(aa, ab, an)}"
     norm_suffix = "-norm" if args.norm else ""
-    path_name = (
-        f"n{args.length}-tt_{tt_suffix}-w_{width_suffix}-a_{angle_suffix}{norm_suffix}"
-    )
+    path_name = f"n{args.length}-tt_{tt_suffix}-w_{width_suffix}-a_{angle_suffix}{norm_suffix}-s{args.sender}"
 
     path_dir_data = PATH_DIR_DATA / pathlib.Path(__file__).stem
 
@@ -134,6 +147,7 @@ if __name__ == "__main__":
                 width_span,
                 h_angle_span,
                 tt_span,
+                n_sender=args.sender,
                 norm=args.norm,
                 n_jobs=args.n_jobs,
                 backend=args.backend,
