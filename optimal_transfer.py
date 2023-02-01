@@ -24,11 +24,14 @@ def loss_frobenius_qip2022(m):
     return -np.real(np.sqrt((diff.conj() @ diff).trace()))
 
 
+def frobenius_norm(m):
+    return np.sum(np.abs(m) ** 2)
+
 def loss_frobenius(m):
     """Return loss function based on Frobenius norm (true)"""
     m_inf = np.zeros_like(m)
     m_inf[-1, -1] = 1
-    return -np.sum(np.abs(m - m_inf) ** 2)
+    return - frobenius_norm(m - m_inf)
 
 
 def main(lengthes, n_sender, n_ancillas_list, loss_function):
