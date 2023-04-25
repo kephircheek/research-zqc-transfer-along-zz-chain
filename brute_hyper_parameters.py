@@ -52,7 +52,7 @@ def calc_case(
         length=length,
         n_sender=n_sender,
         excitations=n_sender if excitations is None else excitations,
-        n_ancillas=0,
+        n_ancillas=n_ancillas,
     )
     transfer_task = TransferZQCPerfectlyTask(problem, transmission_time=tt)
     if loss_function is None:
