@@ -21,13 +21,7 @@ from quanty.state.coherence import coherence_matrix
 from quanty.task.transfer_ import FitTransferZQCPerfectlyTask, TransferZQCPerfectlyTask
 
 from config import PATH_DIR_DATA
-
-
-def loss_frobenius(m):
-    """Return loss function based on Frobenius norm (true)"""
-    m_inf = np.zeros_like(m)
-    m_inf[-1, -1] = 1
-    return frobenius_norm(m - m_inf)
+from loss import loss_frobenius, min_diag_elem_in_ex2block_q3_exordered
 
 
 def calc_case(
