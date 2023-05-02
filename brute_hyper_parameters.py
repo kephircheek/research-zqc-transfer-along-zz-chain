@@ -3,9 +3,12 @@ import itertools
 import json
 import pathlib
 import tempfile
+import warnings
 from dataclasses import dataclass
+from typing import Callable, Literal
 
 import numpy as np
+import numpy.typing as npt
 import quanty.json
 import timeti
 import tqdm
@@ -20,110 +23,177 @@ from quanty.problem.transfer import TransferAlongChain, TransferZQCAlongChain
 from quanty.state.coherence import coherence_matrix
 from quanty.task.transfer_ import FitTransferZQCPerfectlyTask, TransferZQCPerfectlyTask
 
+import loss
 from config import PATH_DIR_DATA
-from loss import loss_frobenius, min_diag_elem_in_ex2block_q3_exordered
 
 
-def calc_case(
-    path,
-    length,
-    width,
-    h_angle,
-    tt,
-    norm,
-    n_sender,
-    n_ancillas=0,
-    excitations=None,
-    loss_function=None,
-    method=None,
-    method_kwargs=None,
-):
-    geometry = ZigZagChain.from_two_chain(2, width)  # two is True
-    model = Homogeneous(geometry, h_angle=h_angle, norm_on=(0, 1) if norm else None)
-    hamiltonian = XXZ(model)
-    problem = TransferZQCAlongChain.init_classic(
-        hamiltonian,
-        length=length,
-        n_sender=n_sender,
-        excitations=n_sender if excitations is None else excitations,
-        n_ancillas=n_ancillas,
-    )
-    transfer_task = TransferZQCPerfectlyTask(problem, transmission_time=tt)
-    if loss_function is None:
-        result = task.run()
-    else:
-        fit_transfer_task = FitTransferZQCPerfectlyTask(
-            transfer_task,
-            loss_function=loss_function,
-            method=method,
-            method_kwargs=method_kwargs,
-            polish=True,
-            fsolve=True,
-            history_maxlen=1,
+def parse_linspace(s: str):
+    a, b, n = map(str.strip, s.split(","))
+    return np.linspace(float(a), float(b), int(n))
+
+
+def round_smart(x: float, decimals=3):
+    return int(x) if np.abs(x - int(x)) < 1e-13 else np.round(x, decimals)
+
+
+def dumps_linspace(arr: str):
+    a = round_smart(arr[0])
+    b = round_smart(arr[-1])
+    steps = arr.shape[0]
+    return f"{a},{b},{steps}"
+
+
+def import_loss(loss_function_name):
+    return getattr(loss, loss_function_name)
+
+
+@dataclass(frozen=True)
+class BruteHyperParameterSubTask:
+    number: int
+    pathdir: pathlib.Path
+    task: TransferZQCPerfectlyTask | FitTransferZQCPerfectlyTask
+
+    def run(self):
+        if isinstance(self.task, TransferZQCPerfectlyTask):
+            result_main = self.task.run()
+
+        elif isinstance(self.task, FitTransferZQCPerfectlyTask):
+            r = self.task.run()
+            result_main = r.history[-1]
+
+        result = BruteHyperParameterSubTaskResult(self)
+        result_main_json = quanty.json.dumps(result_main, indent=2)
+        result.path.write_text(result_main_json)
+        return result
+
+
+@dataclass(frozen=True)
+class BruteHyperParameterSubTaskResult:
+    task: BruteHyperParameterSubTask
+
+    @property
+    def path(self):
+        return self.task.pathdir / f"{self.task.number}.json"
+
+
+@dataclass(frozen=True)
+class BruteHyperParameterTask:
+    length: int
+    width_span: npt.ArrayLike
+    h_angle_span: npt.ArrayLike
+    tt_span: npt.ArrayLike
+    norm: bool
+    n_sender: int = 3
+    n_ancillas: int = 0
+    excitations: int | None = None
+    loss_function: Callable | None = None
+    method: Literal["dual_annealing", "brute_random"] | None = None
+    method_kwargs: dict | None = None
+    n_jobs: int = 1
+    backend: Literal["loky", "multiprocessing", "threading"] = "loky"
+
+    def run_subtask(self, pathdir, i, width, h_angle, tt):
+        geometry = ZigZagChain.from_two_chain(2, width)  # two is True
+        model = Homogeneous(
+            geometry, h_angle=h_angle, norm_on=(0, 1) if self.norm else None
+        )
+        hamiltonian = XXZ(model)
+        problem = TransferZQCAlongChain.init_classic(
+            hamiltonian,
+            length=self.length,
+            n_sender=self.n_sender,
+            excitations=self.n_sender if self.excitations is None else self.excitations,
+            n_ancillas=self.n_ancillas,
+        )
+        transfer_task = TransferZQCPerfectlyTask(problem, transmission_time=tt)
+
+        task_main: TransferZQCPerfectlyTask | FitTransferZQCPerfectlyTask = None
+        if self.loss_function is None:
+            task_main = transfer_task
+        else:
+            task_main = FitTransferZQCPerfectlyTask(
+                transfer_task,
+                loss_function=self.loss_function,
+                method=self.method,
+                method_kwargs=self.method_kwargs,
+                polish=False,
+                fsolve=True,
+                history_maxlen=1,
+            )
+
+        subtask = BruteHyperParameterSubTask(i, pathdir, task_main)
+        subtask_result = result = subtask.run()
+        return subtask_result
+
+    @timeti.profiler()
+    def _run(self, pathdir):
+        cases = itertools.product(self.width_span, self.h_angle_span, self.tt_span)
+        return Parallel(n_jobs=self.n_jobs, backend=self.backend)(
+            delayed(self.run_subtask)(pathdir, i, width, h_angle, tt)
+            for i, (width, h_angle, tt) in tqdm.tqdm(list(enumerate(cases)), ncols=90)
         )
 
-        fit_transfer_result = fit_transfer_task.run()
-        result = fit_transfer_result.history[-1]
+    def run(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir = pathlib.Path(tmpdir)
+            interupted: bool = False
+            broken: bool = False
+            try:
+                subtask_results = self._run(tmpdir)
+            except KeyboardInterrupt:
+                interupted = True
+            except Exception as e:
+                warnings.warn(str(e))
+                broken = True
 
-    quanty.json.dumps(result, indent=2)
-    path.write_text(quanty.json.dumps(result, indent=2))
+            result = BruteHyperParameterResult(self, interupted=interupted, broken=broken)
+            results = [quanty.json.loads(p.read_text()) for p in tmpdir.iterdir()]
+            result.path.write_text(quanty.json.dumps(results, indent=2))
+            return result
 
 
-@timeti.profiler
-def calc(
-    path_dir,
-    length,
-    width_span,
-    h_angle_span,
-    tt_span,
-    norm,
-    n_sender=3,
-    n_ancillas=0,
-    excitations=None,
-    loss_function=None,
-    method=None,
-    method_kwargs=None,
-    n_jobs=1,
-    backend="loky",
-):
-    results = []
-    cases = itertools.product(width_span, h_angle_span, tt_span)
-    Parallel(n_jobs=n_jobs, backend=backend)(
-        delayed(calc_case)(
-            path_dir / f"{i}.json",
-            length,
-            width,
-            h_angle,
-            tt,
-            norm,
-            n_sender=n_sender,
-            excitations=excitations,
-            n_ancillas=n_ancillas,
-            loss_function=loss_function,
-            method=method,
-            method_kwargs=method_kwargs,
+@dataclass(frozen=True)
+class BruteHyperParameterResult:
+    task: BruteHyperParameterTask
+    interupted: bool = False
+    broken: bool = False
+
+    @property
+    def path(self):
+        path_dir_results = PATH_DIR_DATA / pathlib.Path(__file__).stem
+        path_dir_results.exists() or path_dir_results.mkdir()
+        return path_dir_results / self.filename
+
+    @property
+    def filename(self):
+        return pathlib.Path(
+            f"n{self.task.length}"
+            + f"-tt_{dumps_linspace(self.task.tt_span)}"
+            + f"-w_{dumps_linspace(self.task.width_span)}"
+            + f"-a_{dumps_linspace(self.task.h_angle_span)}"
+            + f"-s{self.task.n_sender}"
+            + (f"-ex{self.task.excitations}" if self.task.excitations else "")
+            + (f"-na_{self.task.n_ancillas}" if self.task.n_ancillas > 0 else "")
+            + (f"-m_{self.task.method}" if self.task.method else "")
+            + (
+                f"-lf_{self.task.loss_function.__name__}"
+                if self.task.loss_function
+                else ""
+            )
+            + ("-norm" if self.task.norm else "")
+            + ("-broken" if self.broken else "")
+            + ("-interupted" if self.interupted else "")
+            + ".json"
         )
-        for i, (width, h_angle, tt) in tqdm.tqdm(list(enumerate(cases)), ncols=90)
-    )
-
-
-def parse_number(n: str):
-    return int(n) if float(n) == int(float(n)) else float(n)
-
-
-def parse_slice(s: str):
-    args = [parse_number(n) if n.strip() else None for n in s.split(":")]
-    return slice(*args)
-
-
-def dump_slice(a, b, n, ndigits=2):
-    return f"{round(a, ndigits)}_{round(b, ndigits)}_{n}"
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Find perfect transferred state with full init state."
-        " (sender spins number equal to top excitation number)"
+        description=(
+            "Find perfect transferred state."
+            " Note, if excitation is not setted top excitation number"
+            " equal to sender spins number."
+        )
     )
     parser.add_argument(
         "--backend",
@@ -132,108 +202,36 @@ if __name__ == "__main__":
         choices=("loky", "multiprocessing", "threading"),
     )
     parser.add_argument("--length", type=int)
-    parser.add_argument("--norm", action="store_true")
-    parser.add_argument("--n_jobs", type=int, default=1)
-    parser.add_argument("--tt", type=parse_slice, default=None)
-    parser.add_argument("--width", type=parse_slice, default=None)
-    parser.add_argument("--angle", type=parse_slice, default=None)
+    parser.add_argument("--tt", type=parse_linspace, default=None)
+    parser.add_argument("--width", type=parse_linspace, default=None)
+    parser.add_argument("--angle", type=parse_linspace, default=None)
     parser.add_argument("--sender", type=int, default=3)
     parser.add_argument("--n_ancillas", type=int, default=0)
     parser.add_argument("--excitations", type=int, default=None)
+    parser.add_argument("--loss_function", type=import_loss, default=None)
     parser.add_argument(
         "--method", choices=["brute_random", "dual_annealing"], default=None
     )
-    parser.add_argument("--method_kwargs", type=str, default=None)
+    parser.add_argument("--method_kwargs", type=json.loads, default=None)
+    parser.add_argument("--norm", action="store_true")
+    parser.add_argument("--n_jobs", type=int, default=1)
 
     args = parser.parse_args()
 
-    ta_default = 0
-    tb_default = args.length * 10
-    if args.tt is None:
-        ta = ta_default
-        tb = tb_default
-        tn = int(abs(ta - tb) / 10) + 1
-    else:
-        ta = args.tt.start or ta_default
-        tb = args.tt.stop or tb_default
-        tn = args.tt.step or int(abs(ta - tb) / 10) + 1
-
-    wa_default = 0
-    wb_default = 3
-    if args.width is None:
-        wa = wa_default
-        wb = wb_default
-        wn = int(abs(wa - wb) * 10) + 1
-    else:
-        wa = args.width.start or wa_default
-        wb = args.width.stop or wb_default
-        wn = args.width.step or int(abs(wa - wb) * 10) + 1
-
-    aa_default = 0
-    ab_default = np.pi
-    if args.angle is None:
-        aa = aa_default
-        ab = ab_default
-        an = int(abs(aa - ab) * 10) + 1
-    else:
-        aa = args.angle.start or aa_default
-        ab = args.angle.stop or ab_default
-        an = args.angle.step or int(abs(aa - ab) * 10) + 1
-
-    method_kwargs = json.loads(args.method_kwargs) if args.method_kwargs else None
-    excitations = args.excitations if args.excitations is not None else args.n_sender
-
-    tt_suffix = f"{dump_slice(ta, tb, tn)}"
-    width_suffix = f"{dump_slice(wa, wb, wn)}"
-    angle_suffix = f"{dump_slice(aa, ab, an)}"
-    norm_suffix = "-norm" if args.norm else ""
-    n_ancillas_suffix = f"-na_{args.n_ancillas}" if args.n_ancillas > 0 else ""
-    excitation_suffix = f"-ex{args.excitations}" if args.excitations is None else ""
-    method_suffix = f"-m_{args.method}" if args.method else ""
-    path_name = (
-        f"n{args.length}"
-        f"-tt_{tt_suffix}"
-        f"-w_{width_suffix}"
-        f"-a_{angle_suffix}"
-        f"-s{args.sender}"
-        f"-ex{excitations}"
-        f"{excitation_suffix}"
-        f"{n_ancillas_suffix}"
-        f"{method_suffix}"
-        f"{norm_suffix}"
+    task = BruteHyperParameterTask(
+        args.length,
+        args.width,
+        args.angle,
+        args.tt,
+        n_sender=args.sender,
+        excitations=args.excitations,
+        loss_function=args.loss_function,
+        n_ancillas=args.n_ancillas,
+        method=args.method,
+        method_kwargs=args.method_kwargs,
+        norm=args.norm,
+        n_jobs=args.n_jobs,
+        backend=args.backend,
     )
-
-    path_dir_data = PATH_DIR_DATA / pathlib.Path(__file__).stem
-
-    with tempfile.TemporaryDirectory() as path_dir:
-        path_dir = pathlib.Path(path_dir)
-
-        tt_span = np.linspace(ta, tb, tn)
-        width_span = np.linspace(wa, wb, wn)
-        h_angle_span = np.linspace(aa, ab, an)
-        spec_suffix = ""
-        try:
-            calc(
-                path_dir,
-                args.length,
-                width_span,
-                h_angle_span,
-                tt_span,
-                n_sender=args.sender,
-                excitations=args.excitations,
-                loss_function=loss_frobenius,
-                n_ancillas=args.n_ancillas,
-                method=args.method,
-                method_kwargs=method_kwargs,
-                norm=args.norm,
-                n_jobs=args.n_jobs,
-                backend=args.backend,
-            )
-        except KeyboardInterrupt:
-            spec_suffix = "-broken"
-
-        results = [quanty.json.loads(p.read_text()) for p in path_dir.iterdir()]
-        path = path_dir_data / f"{path_name}{spec_suffix}.json"
-        path.write_text(quanty.json.dumps(results, indent=2))
-
-    print(path)
+    result = task.run()
+    print(result.path)
