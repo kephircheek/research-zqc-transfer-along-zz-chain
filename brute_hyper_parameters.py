@@ -27,6 +27,16 @@ import loss
 from config import PATH_DIR_DATA
 
 
+def batched(iterable, n):
+    # batched('ABCDEFG', 3) --> ABC DEF G
+    # New in python version 3.12
+    if n < 1:
+        raise ValueError("n must be at least one")
+    it = iter(iterable)
+    while batch := tuple(itertools.islice(it, n)):
+        yield batch
+
+
 def parse_linspace(s: str):
     a, b, n = map(str.strip, s.split(","))
     return np.linspace(float(a), float(b), int(n))
@@ -49,7 +59,7 @@ def import_loss(loss_function_name):
 
 @dataclass(frozen=True)
 class BruteHyperParameterSubTask:
-    number: int
+    uid: int | str
     pathdir: pathlib.Path
     task: TransferZQCPerfectlyTask | FitTransferZQCPerfectlyTask
 
@@ -73,7 +83,7 @@ class BruteHyperParameterSubTaskResult:
 
     @property
     def path(self):
-        return self.task.pathdir / f"{self.task.number}.json"
+        return self.task.pathdir / f"{self.task.uid}.json"
 
 
 @dataclass(frozen=True)
@@ -92,7 +102,7 @@ class BruteHyperParameterTask:
     n_jobs: int = 1
     backend: Literal["loky", "multiprocessing", "threading"] = "loky"
 
-    def run_subtask(self, pathdir, i, width, h_angle, tt):
+    def run_subtask(self, pathdir, uid, width, h_angle, tt):
         geometry = ZigZagChain.from_two_chain(2, width)  # two is True
         model = Homogeneous(
             geometry, h_angle=h_angle, norm_on=(0, 1) if self.norm else None
@@ -121,17 +131,20 @@ class BruteHyperParameterTask:
                 history_maxlen=1,
             )
 
-        subtask = BruteHyperParameterSubTask(i, pathdir, task_main)
+        subtask = BruteHyperParameterSubTask(uid, pathdir, task_main)
         subtask_result = subtask.run()
         return subtask_result
 
     @timeti.profiler()
     def _run(self, pathdir):
         cases = itertools.product(self.width_span, self.h_angle_span, self.tt_span)
-        return Parallel(n_jobs=self.n_jobs, backend=self.backend)(
-            delayed(self.run_subtask)(pathdir, i, width, h_angle, tt)
-            for i, (width, h_angle, tt) in tqdm.tqdm(list(enumerate(cases)), ncols=90)
-        )
+        batch_size = self.n_jobs * 100 if self.n_jobs > 0 else 1000
+        cases_batched = batched(cases, batch_size)
+        for i, cases_batch in tqdm.tqdm(list(enumerate(cases_batched)), ncols=90):
+            Parallel(n_jobs=self.n_jobs, backend=self.backend)(
+                delayed(self.run_subtask)(pathdir, f"{i}-{j}", width, h_angle, tt)
+                for j, (width, h_angle, tt) in enumerate(cases_batch)
+            )
 
     def run(self):
         with tempfile.TemporaryDirectory() as tmpdir:
