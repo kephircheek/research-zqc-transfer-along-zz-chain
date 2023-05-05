@@ -195,12 +195,6 @@ if __name__ == "__main__":
             " equal to sender spins number."
         )
     )
-    parser.add_argument(
-        "--backend",
-        type=str,
-        default="loky",
-        choices=("loky", "multiprocessing", "threading"),
-    )
     parser.add_argument("--length", type=int)
     parser.add_argument("--tt", type=parse_linspace, default=None)
     parser.add_argument("--width", type=parse_linspace, default=None)
@@ -215,6 +209,12 @@ if __name__ == "__main__":
     parser.add_argument("--method_kwargs", type=json.loads, default=None)
     parser.add_argument("--norm", action="store_true")
     parser.add_argument("--n_jobs", type=int, default=1)
+    parser.add_argument(
+        "--backend",
+        type=str,
+        default="loky",
+        choices=("loky", "multiprocessing", "threading"),
+    )
 
     args = parser.parse_args()
 
