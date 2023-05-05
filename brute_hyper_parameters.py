@@ -122,7 +122,7 @@ class BruteHyperParameterTask:
             )
 
         subtask = BruteHyperParameterSubTask(i, pathdir, task_main)
-        subtask_result = result = subtask.run()
+        subtask_result = subtask.run()
         return subtask_result
 
     @timeti.profiler()
