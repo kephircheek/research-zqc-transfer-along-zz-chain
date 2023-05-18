@@ -30,3 +30,8 @@ def min_diag_elem_in_ex2block_q3_exordered(s):
     excitation in ordered by excitation matrix of three qubits.
     """
     return np.min(np.diag(s[4:7, 4:7]))
+
+
+def min_diag_elem_without_corners(s):
+    """Return min element in diagonal without corners."""
+    return np.min(np.diag(s)[1:-1])
