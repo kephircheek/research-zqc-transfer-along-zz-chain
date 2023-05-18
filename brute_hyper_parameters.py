@@ -138,13 +138,21 @@ class BruteHyperParameterTask:
     @timeti.profiler()
     def _run(self, pathdir):
         cases = itertools.product(self.width_span, self.h_angle_span, self.tt_span)
-        batch_size = self.n_jobs * 100 if self.n_jobs > 0 else 1000
-        cases_batched = batched(cases, batch_size)
-        for i, cases_batch in tqdm.tqdm(list(enumerate(cases_batched)), ncols=90):
-            Parallel(n_jobs=self.n_jobs, backend=self.backend)(
-                delayed(self.run_subtask)(pathdir, f"{i}-{j}", width, h_angle, tt)
-                for j, (width, h_angle, tt) in enumerate(cases_batch)
-            )
+        batch_size = (
+            self.n_jobs
+            if self.n_jobs > 0
+            else (c - 1 if (c := joblib.cpu_count()) > 1 else 1)
+        )
+        if batch_size == 1:
+            for i, (width, h_angle, tt) in tqdm.tqdm(list(enumerate(cases)), ncols=90):
+                self.run_subtask(pathdir, str(i), width, h_angle, tt)
+        else:
+            cases_batched = batched(cases, batch_size)
+            for i, cases_batch in tqdm.tqdm(list(enumerate(cases_batched)), ncols=90):
+                Parallel(n_jobs=self.n_jobs, backend=self.backend)(
+                    delayed(self.run_subtask)(pathdir, f"{i}-{j}", width, h_angle, tt)
+                    for j, (width, h_angle, tt) in enumerate(cases_batch)
+                )
 
     def run(self):
         with tempfile.TemporaryDirectory() as tmpdir:
